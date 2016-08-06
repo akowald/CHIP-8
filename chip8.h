@@ -37,7 +37,7 @@ struct SDL_Texture;
 class Chip8
 {
 public:
-	Chip8(int pixelScale=16);
+	Chip8(int pixelScale, const std::string &preferredAudio);
 	~Chip8();
 
 	bool LoadProgram(const std::string &fileName);
@@ -46,6 +46,9 @@ public:
 	void SetForegroundColor(uint32_t color) { foreground = color; };
 	void SetIPS(uint32_t ips) { this->ips = ips; };
 
+	void ShowAudioDevices();
+	void SetPreferredAudioDevice(const std::string &deviceName) { preferredAudio = deviceName; };
+	void SetVolume(float volumeLevel);
 private:
 	static constexpr int W = 64; // Width of the screen in pixels.
 	static constexpr int H = 32; // Height of the screen in pixels.
@@ -58,6 +61,7 @@ private:
 	static constexpr unsigned int FPS = 60;
 
 	std::mt19937 rng;
+	std::string preferredAudio;
 
 	union
 	{
@@ -105,15 +109,14 @@ private:
 	void ExecuteInstruction();
 	void SetKey(uint8_t key, bool pressed);
 
-	bool InitSDL(int pixelScale);
+	bool InitSDL(int pixelScale, const std::string &preferredAudio);
 	void ClearScreen();
 	void DrawScreen();
 
-	void Chip8::ShowAudioDevices();
 	static void AudioCallback(void *userdata, uint8_t *stream, int len);
-	void Chip8::SawtoothWave(uint8_t *stream, int len);
+	void SawtoothWave(uint8_t *stream, int len);
 	double audioLevel;
 	double audioStep;
-	double audioVolume;
-	int32_t audioLength;
+	float audioVolume;
+	uint32_t audioDevice;
 };

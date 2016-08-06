@@ -25,7 +25,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "chip8.h"
 
-Chip8::Chip8(int pixelScale)
+Chip8::Chip8(int pixelScale, const std::string &preferredAudio)
 {
 	// Ensure we stay out of program space. (0x200 onwards)
 	assert(PROGRAM_SPACE - ((uint8_t *)&keys + sizeof(keys) - (uint8_t *)&memory) >= 0);
@@ -58,10 +58,9 @@ Chip8::Chip8(int pixelScale)
 
 	ips = 3000; // Instructions per second.
 
-	init = InitSDL(pixelScale);
-	Reset();
+	init = InitSDL(pixelScale, preferredAudio);
 
-	printf("-> %d\n", ((uint8_t *)&keys + sizeof(keys) - (uint8_t *)&memory));
+	Reset();
 }
 
 void Chip8::Reset()
@@ -86,7 +85,7 @@ void Chip8::AudioCallback(void *userdata, uint8_t *stream, int len)
 
 void Chip8::SawtoothWave(uint8_t *stream, int len)
 {
-	printf("SawtoothWave callback: len = %d, tick = %d\n", len, SDL_GetTicks());
+	//printf("SawtoothWave callback: len = %d, tick = %d\n", len, SDL_GetTicks());
 	len /= 2;
 
 	Sint16 *buffer = (Sint16 *)stream;
@@ -98,11 +97,9 @@ void Chip8::SawtoothWave(uint8_t *stream, int len)
 		
 		buffer[i] = (Sint16)(audioVolume * step);
 	}
-
-	audioLength -= len;
 }
 
-bool Chip8::InitSDL(int pixelScale)
+bool Chip8::InitSDL(int pixelScale, const std::string &preferredAudio)
 {
 	if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS|SDL_INIT_AUDIO) != 0)
 	{
@@ -141,38 +138,43 @@ bool Chip8::InitSDL(int pixelScale)
 	want.callback = AudioCallback;
 	want.userdata = this;
 
-	printf("'%s'\n", SDL_GetAudioDeviceName(0, 0));
-	SDL_AudioDeviceID dev = SDL_OpenAudioDevice(SDL_GetAudioDeviceName(0, 0), 0, &want, &have, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
-	if(dev == 0)
+	const char *device = nullptr;
+	if(preferredAudio.length() > 0) device = preferredAudio.c_str();
+
+	audioDevice = SDL_OpenAudioDevice(device, 0, &want, &have, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
+	if(audioDevice == 0)
 	{
-		printf("SDL_OpenAudioDevice error: %s\n", SDL_GetError());
+		printf("SDL_OpenAudioDevice error: %s\nRunning without audio support!\n", SDL_GetError());
 	}else{
-		ShowAudioDevices();
-
 		printf("Using audio driver: '%s'\n", SDL_GetCurrentAudioDriver());
-		printf(" frequency: %d format: f %d s %d be %d sz %d channels: %d samples: %d\n", have.freq, SDL_AUDIO_ISFLOAT(have.format), SDL_AUDIO_ISSIGNED(have.format), SDL_AUDIO_ISBIGENDIAN(have.format), SDL_AUDIO_BITSIZE(have.format), have.channels, have.samples);
-
+		//printf(" frequency: %d format: f %d s %d be %d sz %d channels: %d samples: %d\n", have.freq, SDL_AUDIO_ISFLOAT(have.format), SDL_AUDIO_ISSIGNED(have.format), SDL_AUDIO_ISBIGENDIAN(have.format), SDL_AUDIO_BITSIZE(have.format), have.channels, have.samples);
+		
 		int frequency = 400; // Hz.
-		audioLength = have.freq * 5;
 		audioStep = 2.0 / (1.0 * have.freq / frequency);
-		audioVolume = 3000.0;
+		SetVolume(0.1f);
 		audioLevel = 0.0;
-
-		SDL_PauseAudioDevice(dev, 0);
-
-		while(audioLength > 0)
-			SDL_Delay(500);
-
-		SDL_CloseAudioDevice(dev);
 	}
-
-	return false;
 
 	return true;
 }
 
 void Chip8::ShowAudioDevices()
 {
+	if(!init)
+	{
+		printf("Failed to retrieve audio devices: SDL setup failed!\n");
+		return;
+	}
+
+	printf("====================================================\n");
+
+	int numAudioDevices = SDL_GetNumAudioDevices(0);
+	printf("%d audio devices:\n", numAudioDevices);
+	for(int i=0; i<numAudioDevices; i++)
+	{
+		printf(" \"%s\"\n", SDL_GetAudioDeviceName(i, 0));
+	}
+
 	int numAudioDrivers = SDL_GetNumAudioDrivers();
 	printf("%d audio drivers:", numAudioDrivers);
 	for(int i=0; i<numAudioDrivers; i++)
@@ -180,12 +182,15 @@ void Chip8::ShowAudioDevices()
 		printf(" '%s'", SDL_GetAudioDriver(i));
 	}
 
-	int numAudioDevices = SDL_GetNumAudioDevices(0);
-	printf("\n%d audio devices:\n", numAudioDevices);
-	for(int i=0; i<numAudioDevices; i++)
-	{
-		printf(" '%s'\n", SDL_GetAudioDeviceName(i, 0));
-	}
+	printf("\n====================================================\n");
+}
+
+void Chip8::SetVolume(float volumeLevel)
+{
+	audioVolume = volumeLevel * SHRT_MAX;
+
+	if(audioVolume < 0.0f) audioVolume = 0.0f;
+	else if(audioVolume > (float)SHRT_MAX) audioVolume = (float)SHRT_MAX;
 }
 
 Chip8::~Chip8()
@@ -203,6 +208,11 @@ Chip8::~Chip8()
 	if(window != nullptr)
 	{
 		SDL_DestroyWindow(window);
+	}
+
+	if(audioDevice > 0)
+	{
+		SDL_CloseAudioDevice(audioDevice);
 	}
 
 	SDL_Quit();
@@ -350,6 +360,16 @@ void Chip8::Run()
 			delayTimer -= std::min(frames, int(delayTimer));
 			soundTimer -= std::min(frames, int(soundTimer));
 
+			if(audioDevice > 0)
+			{
+				if(soundTimer > 0)
+				{
+					SDL_PauseAudioDevice(audioDevice, 0);
+				}else{
+					SDL_PauseAudioDevice(audioDevice, 1);
+				}
+			}
+
 			DrawScreen();
 		}
 
@@ -366,6 +386,7 @@ void Chip8::ExecuteInstruction()
 	uint16_t opCode = (memory[PC] << 8)|memory[PC+1];
 	PC += 2;
 
+	// wxyz wnnn wxkk
 	uint8_t w = (opCode >> 12) & 0xF;
 	uint8_t x = (opCode >> 8) & 0xF;
 	uint8_t y = (opCode >> 4) & 0xF;
