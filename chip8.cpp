@@ -18,6 +18,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <cassert>
 #include <cstdio>
 #include <fstream>
+#include <iostream>
 #include <chrono>
 #include <algorithm>
 #include <unordered_map>
@@ -25,11 +26,19 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "chip8.h"
 
-Chip8::Chip8(int pixelScale, const std::string &preferredAudio)
-{
-	// Ensure we stay out of program space. (0x200 onwards)
-	assert(PROGRAM_SPACE - ((uint8_t *)&keys + sizeof(keys) - (uint8_t *)&memory) >= 0);
+#define SANITY_CHECK(condition, error_message) \
+	if(!(condition)) Halt(error_message);
+#define PRINT_DEBUG_INSTRUCTION(addr, opCode, name) \
+	if(debug) printf("0x%04X:0x%04X - %s\n", addr-0x02, opCode, name);
 
+enum
+{
+	DebugState_StepInto=0,
+	DebugState_Run,
+};
+
+Chip8::Chip8()
+{
 	static const uint8_t fonts[16 * 5] = {
 		0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
 		0x20, 0x60, 0x20, 0x20, 0x70, // 1
@@ -56,11 +65,27 @@ Chip8::Chip8(int pixelScale, const std::string &preferredAudio)
 	background = 0x000000; // Black.
 	foreground = 0xFFFFFF; // White.
 
+	debug = false;
 	ips = 3000; // Instructions per second.
-
-	init = InitSDL(pixelScale, preferredAudio);
+	pixelScale = 16;
 
 	Reset();
+
+	if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS|SDL_INIT_AUDIO) != 0)
+	{
+		printf("SDL_Init error: %s\n", SDL_GetError());
+	}
+
+	// Ensure we stay out of program space. (0x200 onwards)
+	SANITY_CHECK(PROGRAM_SPACE - ((uint8_t *)&keys + sizeof(keys) - (uint8_t *)&memory) >= 0, "No free program space");
+}
+
+Chip8::~Chip8()
+{
+	delete pixels;
+
+	CleanupSDL();
+	SDL_Quit();
 }
 
 void Chip8::Reset()
@@ -75,8 +100,23 @@ void Chip8::Reset()
 	keys = 0x00;
 	waitingKey = 0x00;
 
+	halt = false;
+	debugState = DebugState_StepInto;
+
 	ClearScreen();
 }
+
+void Chip8::SetBackgroundColor(uint32_t color)
+{
+	color = std::min(color, 0xFFFFFFu);
+	background = color;
+}
+
+void Chip8::SetForegroundColor(uint32_t color)
+{
+	color = std::min(color, 0xFFFFFFu);
+	foreground = color;
+};
 
 void Chip8::AudioCallback(void *userdata, uint8_t *stream, int len)
 {
@@ -85,10 +125,17 @@ void Chip8::AudioCallback(void *userdata, uint8_t *stream, int len)
 
 void Chip8::SawtoothWave(uint8_t *stream, int len)
 {
-	//printf("SawtoothWave callback: len = %d, tick = %d\n", len, SDL_GetTicks());
+	//printf("SawtoothWave callback: len = %d, tick = %d\n", len/2, SDL_GetTicks());
+	
 	len /= 2;
-
 	Sint16 *buffer = (Sint16 *)stream;
+
+	if(soundTimer == 0)
+	{
+		for(int i=0; i<len; i++) buffer[i] = 0;
+		return;
+	}
+
 	for(int i=0; i<len; i++)
 	{
 		double step = audioLevel + audioStep;
@@ -99,11 +146,42 @@ void Chip8::SawtoothWave(uint8_t *stream, int len)
 	}
 }
 
-bool Chip8::InitSDL(int pixelScale, const std::string &preferredAudio)
+void Chip8::CleanupSDL()
 {
-	if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS|SDL_INIT_AUDIO) != 0)
+	init = false;
+
+	if(texture != nullptr)
 	{
-		printf("SDL_Init error: %s\n", SDL_GetError());
+		SDL_DestroyTexture(texture);
+		texture = nullptr;
+	}
+	if(renderer != nullptr)
+	{
+		SDL_DestroyRenderer(renderer);
+		renderer = nullptr;
+	}
+	if(window != nullptr)
+	{
+		SDL_DestroyWindow(window);
+		window = nullptr;
+	}
+
+	if(audioDevice > 0)
+	{
+		SDL_CloseAudioDevice(audioDevice);
+		audioDevice = 0;
+	}
+}
+
+bool Chip8::InitSDL()
+{
+	CleanupSDL();
+
+	// Check to see if the call to SDL_Init() was successful.
+	int mask = SDL_INIT_VIDEO|SDL_INIT_EVENTS|SDL_INIT_AUDIO;
+	if(SDL_WasInit(mask) != mask)
+	{
+		printf("SDL is not initialized.\n");
 		return false;
 	}
 
@@ -134,7 +212,7 @@ bool Chip8::InitSDL(int pixelScale, const std::string &preferredAudio)
 	want.freq = 44100;
 	want.format = AUDIO_S16SYS;
 	want.channels = 1;
-	want.samples = 4096;
+	want.samples = 2048;
 	want.callback = AudioCallback;
 	want.userdata = this;
 
@@ -153,6 +231,8 @@ bool Chip8::InitSDL(int pixelScale, const std::string &preferredAudio)
 		audioStep = 2.0 / (1.0 * have.freq / frequency);
 		SetVolume(0.1f);
 		audioLevel = 0.0;
+
+		SDL_PauseAudioDevice(audioDevice, 0);
 	}
 
 	return true;
@@ -160,9 +240,9 @@ bool Chip8::InitSDL(int pixelScale, const std::string &preferredAudio)
 
 void Chip8::ShowAudioDevices()
 {
-	if(!init)
+	if(SDL_WasInit(SDL_INIT_AUDIO) == 0)
 	{
-		printf("Failed to retrieve audio devices: SDL setup failed!\n");
+		printf("Failed to retrieve audio devices: Audio subsystem is not initialized!\n");
 		return;
 	}
 
@@ -191,31 +271,6 @@ void Chip8::SetVolume(float volumeLevel)
 
 	if(audioVolume < 0.0f) audioVolume = 0.0f;
 	else if(audioVolume > (float)SHRT_MAX) audioVolume = (float)SHRT_MAX;
-}
-
-Chip8::~Chip8()
-{
-	delete pixels;
-
-	if(texture != nullptr)
-	{
-		SDL_DestroyTexture(texture);
-	}
-	if(renderer != nullptr)
-	{
-		SDL_DestroyRenderer(renderer);
-	}
-	if(window != nullptr)
-	{
-		SDL_DestroyWindow(window);
-	}
-
-	if(audioDevice > 0)
-	{
-		SDL_CloseAudioDevice(audioDevice);
-	}
-
-	SDL_Quit();
 }
 
 bool Chip8::LoadProgram(const std::string &fileName)
@@ -292,11 +347,15 @@ void Chip8::DrawScreen()
 
 void Chip8::Run()
 {
-	if(!init)
+	if(!InitSDL())
 	{
+		CleanupSDL();
+
 		printf("Failed to run: SDL setup failed!\n");
 		return;
 	}
+
+	init = true; // Created the SDL window successfully!
 
 	unsigned int insPerFrame = std::max(1u, ips/FPS/2);
 	unsigned int consecutiveIns = 0;
@@ -315,7 +374,7 @@ void Chip8::Run()
 		{SDL_SCANCODE_Z, 0xA}, {SDL_SCANCODE_X, 0x0}, {SDL_SCANCODE_C, 0xB}, {SDL_SCANCODE_V, 0xF},
 	};
 
-	while(running)
+	while(running && !halt)
 	{
 		// Execute CPU for consecutiveIns OR until the CPU is waiting for a key to be pressed.
 		for(unsigned int i=0; i<consecutiveIns && !(waitingKey & WAITINGKEY_FLAG); i++)
@@ -360,27 +419,132 @@ void Chip8::Run()
 			delayTimer -= std::min(frames, int(delayTimer));
 			soundTimer -= std::min(frames, int(soundTimer));
 
-			if(audioDevice > 0)
-			{
-				if(soundTimer > 0)
-				{
-					SDL_PauseAudioDevice(audioDevice, 0);
-				}else{
-					SDL_PauseAudioDevice(audioDevice, 1);
-				}
-			}
-
 			DrawScreen();
 		}
 
 		consecutiveIns = std::max(1, frames) * insPerFrame;
 		if(waitingKey & WAITINGKEY_FLAG || !frames) SDL_Delay(1000/FPS);
 	}
+
+	printf("Program terminated.\n");
+
+	CleanupSDL(); // Finished running so destroy the window. SDL still remains initialized until the object is destroyed.
+}
+
+void Chip8::DumpRegisters()
+{
+	printf("Register dump:\n\t  0   1   2   3   4   5   6   7   8   9   A   B   C   D   E   F\nV[]\t= ");
+	for(int i=0; i<MAX_REGISTERS; i++) printf("%03X ", V[i]);
+	printf("\nS[]\t= ");
+	for(int i=0; i<MAX_REGISTERS; i++) printf("%03X ", stack[i]);
+
+	printf("\nSP\t= 0x%X\nI\t= 0x%X\nPC\t= 0x%X\nDT\t= 0x%X\nST\t= 0x%X\n", SP, I, PC, delayTimer, soundTimer);
+}
+
+void Chip8::DumpDisplay()
+{
+	printf("Display dump:");
+
+	for(int i=0; i<W*H; i++)
+	{
+		if(i % W == 0)
+		{
+			printf("\n%2d: ", (i/W)+1);
+		}
+
+		if(display[i])
+			printf("X "); // Pixel set.
+		else
+			printf("- "); // Pixel unset.
+	}
+	printf("\n");
+}
+
+void Chip8::Halt(const char *reason)
+{
+	halt = true;
+
+	printf("Program halted: %s\n", reason);
+
+	if(debug)
+	{
+		DumpRegisters();
+	}
+}
+
+void PrintDebugHelp()
+{
+	printf("Debug mode is enabled. Use the following commands to execute the program:\n h - display this message\n n - continue to next instruction\n r - show all register values\n c - continue until interrupted\n d - show display state\n q - Stop debugger\n");
+}
+
+// Return true to execute the next instruction, false otherwise.
+bool Chip8::DebuggerHandler()
+{
+	// Crude implementation of a debugger.
+	if(debugState == DebugState_Run) return true;
+
+	static bool once = false;
+	if(!once)
+	{
+		once = true;
+		PrintDebugHelp();
+	}
+
+	std::string command;
+	while(true)
+	{
+		printf(":");
+		std::cin >> command;
+		char c = command.at(0);
+		if(c == 'h')
+		{
+			// Requested help.
+			PrintDebugHelp();
+		}else if(c == 'n')
+		{
+			// Execute the next instruction.
+			break;
+		}else if(c == 'r')
+		{
+			// Show the value of all registers.
+			DumpRegisters();
+		}else if(c == 'c')
+		{
+			// Continue executing instructions until interrupted.
+			debugState = DebugState_Run;
+			break;
+		}else if(c == 'd')
+		{
+			// Show the display state.
+			DumpDisplay();
+		}else if(c == 'q')
+		{
+			halt = true;
+			return false;
+		}
+	}
+
+	return true;
 }
 
 void Chip8::ExecuteInstruction()
 {
-	assert(PC >= PROGRAM_SPACE && PC < MAX_MEMORY && PC % 2 == 0); // Check for a valid address in program space.
+	if(halt) return;
+
+	// Instructions should start on even addresses but not all CHIP-8 programs follow that convention.
+	if(!(PC >= PROGRAM_SPACE && PC < MAX_MEMORY))
+	{
+		SANITY_CHECK(false, "PC set to invalid address");
+		return;
+	}
+
+	if(debug)
+	{
+		if(!DebuggerHandler())
+		{
+			return;
+		}
+	}
 
 	// All instructions are 2 bytes long and stored in big-endian fashion.
 	uint16_t opCode = (memory[PC] << 8)|memory[PC+1];
@@ -402,8 +566,7 @@ void Chip8::ExecuteInstruction()
 	}else if(opCode == 0x00EE)
 	{
 		PRINT_DEBUG_INSTRUCTION(PC, opCode, "00EE - RET: Return from a subroutine.");
-		
-		assert(SP > 0); // Stack out of bounds.
+		SANITY_CHECK(SP > 0, "Stack out of bounds");
 
 		PC = stack[SP--];
 	}else if(w == 0x1)
@@ -414,8 +577,7 @@ void Chip8::ExecuteInstruction()
 	}else if(w == 0x2)
 	{
 		PRINT_DEBUG_INSTRUCTION(PC, opCode, "2nnn - CALL addr: Call subroutine at nnn.");
-
-		assert(SP < STACK_SIZE-1); // Check in case of stack overflow.	
+		SANITY_CHECK(SP < STACK_SIZE-1, "Stack overflow");
 
 		stack[++SP] = PC;
 		PC = nnn;
@@ -512,6 +674,12 @@ void Chip8::ExecuteInstruction()
 		PRINT_DEBUG_INSTRUCTION(PC, opCode, "Bnnn - JP V0, addr: Jump to location nnn + V0.");
 
 		PC = nnn + V[0];
+
+		if(PC < PROGRAM_SPACE)
+		{
+			printf("PC = 0x%X\n", PC);
+			getchar();
+		}
 	}else if(w == 0xC)
 	{
 		PRINT_DEBUG_INSTRUCTION(PC, opCode, "Cxkk - RND Vx, byte: Set Vx = random byte AND kk.");
@@ -520,8 +688,7 @@ void Chip8::ExecuteInstruction()
 	}else if(w == 0xD)
 	{
 		PRINT_DEBUG_INSTRUCTION(PC, opCode, "Dxyn - DRW Vx, Vy, nibble: Display n-byte sprite starting at memory location I at (Vx, Vy), set VF = collision.");
-
-		assert(I+z < MAX_MEMORY);
+		SANITY_CHECK(I+z < MAX_MEMORY, "Invalid memory access by DRW");
 		
 		V[0xF] = 0x0;
 		uint8_t pixelX = V[x];
@@ -533,7 +700,7 @@ void Chip8::ExecuteInstruction()
 			{
 				uint16_t cell = rowStart + ((pixelX+bit) % W);
 
-				bool pixel = display[cell] ^ ((memory[I+height] >> (7-bit)) & 0x1);
+				bool pixel = display[cell] ^ ((memory[(I+height) & 0xFFF] >> (7-bit)) & 0x1);
 				if(!pixel && display[cell]) V[0xF] = 0x1; // Set VF to 1 if any pixels are unset.
 				display[cell] = pixel;
 			}
@@ -583,8 +750,7 @@ void Chip8::ExecuteInstruction()
 	}else if(w == 0xF && kk == 0x33)
 	{
 		PRINT_DEBUG_INSTRUCTION(PC, opCode, "Fx33 - LD B, Vx: Store BCD representation of Vx in memory locations I, I+1, and I+2.");
-
-		assert(I+2 < MAX_MEMORY);
+		SANITY_CHECK(I+2 < MAX_MEMORY, "Invalid memory access by LD");
 
 		memory[I] = (V[x] / 100) % 10;
 		memory[I+1] = (V[x] / 10) % 10;
@@ -592,8 +758,7 @@ void Chip8::ExecuteInstruction()
 	}else if(w == 0xF && kk == 0x55)
 	{
 		PRINT_DEBUG_INSTRUCTION(PC, opCode, "Fx55 - LD [I], Vx: Store registers V0 through Vx in memory starting at location I.");
-
-		assert(I+x < MAX_MEMORY);
+		SANITY_CHECK(I+x < MAX_MEMORY, "Invalid memory access by LD");
 
 		for(int i=0; i<=x; i++)
 		{
@@ -603,16 +768,18 @@ void Chip8::ExecuteInstruction()
 	}else if(w == 0xF && kk == 0x65)
 	{
 		PRINT_DEBUG_INSTRUCTION(PC, opCode, "Fx65 - LD Vx, [I]: Read registers V0 through Vx from memory starting at location I.");
-
-		assert(I+x < MAX_MEMORY);
+		SANITY_CHECK(I+x < MAX_MEMORY, "Invalid memory access by LD");
 
 		for(int i=0; i<=x; i++)
 		{
 			V[i] = memory[I+i];
 		}
 		I += x+1;
+	}else if(w == 0x0)
+	{
+		PRINT_DEBUG_INSTRUCTION(PC, opCode, "0nnn - SYS addr: Jump to a machine code routine at nnn. Skipped instruction.");
 	}else{
+		SANITY_CHECK(false, "Unhandled opcode");
 		printf("Unhandled opcode: 0x%04X\n", opCode);
-		assert(false);
 	}
 }

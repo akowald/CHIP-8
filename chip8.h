@@ -17,14 +17,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 #pragma once
 
-//#define DEBUG_INSTRUCTION
-#ifdef DEBUG_INSTRUCTION
-#define PRINT_DEBUG_INSTRUCTION(addr, opCode, name) \
-	printf("0x%04X:0x%04X - %s\n", addr-0x02, opCode, name);
-#else
-#define PRINT_DEBUG_INSTRUCTION(addr, opCode, name)
-#endif
-
 #include <cstdint>
 #include <string>
 #include <random>
@@ -37,18 +29,20 @@ struct SDL_Texture;
 class Chip8
 {
 public:
-	Chip8(int pixelScale, const std::string &preferredAudio);
+	Chip8();
 	~Chip8();
 
 	bool LoadProgram(const std::string &fileName);
 	void Run();
-	void SetBackgroundColor(uint32_t color) { background = color; };
-	void SetForegroundColor(uint32_t color) { foreground = color; };
+	void SetBackgroundColor(uint32_t color);
+	void SetForegroundColor(uint32_t color);
 	void SetIPS(uint32_t ips) { this->ips = ips; };
+	void SetPixelScale(unsigned int pixelScale) { this->pixelScale = pixelScale; };
+	void SetPreferredAudioDevice(const std::string &audioDevice) { preferredAudio = audioDevice; };
 
 	void ShowAudioDevices();
-	void SetPreferredAudioDevice(const std::string &deviceName) { preferredAudio = deviceName; };
 	void SetVolume(float volumeLevel);
+	void EnableDebug(bool enable) { debug = enable; };
 private:
 	static constexpr int W = 64; // Width of the screen in pixels.
 	static constexpr int H = 32; // Height of the screen in pixels.
@@ -104,14 +98,24 @@ private:
 
 	bool init;
 	bool screenUpdated;
+	bool halt;
+	bool debug;
+	int debugState;
+	unsigned int pixelScale;
 
 	void Reset();
 	void ExecuteInstruction();
 	void SetKey(uint8_t key, bool pressed);
 
-	bool InitSDL(int pixelScale, const std::string &preferredAudio);
+	bool InitSDL();
+	void CleanupSDL();
+
 	void ClearScreen();
 	void DrawScreen();
+	void DumpRegisters();
+	void DumpDisplay();
+	void Halt(const char *reason);
+	bool DebuggerHandler();
 
 	static void AudioCallback(void *userdata, uint8_t *stream, int len);
 	void SawtoothWave(uint8_t *stream, int len);

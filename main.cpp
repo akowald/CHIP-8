@@ -16,11 +16,12 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include <iostream>
+#include <unordered_map>
 #include <tclap/CmdLine.h>
 
 #include "chip8.h"
 
-class PixelConstraint : public TCLAP::Constraint<int>
+class PixelConstraint : public TCLAP::Constraint<unsigned int>
 {
 public:
 	virtual std::string description() const
@@ -31,7 +32,7 @@ public:
 	{
 		return "amount";
 	}
-	virtual bool check(const int &value) const
+	virtual bool check(const unsigned int &value) const
 	{
 		return value >= 1 && value <= 1000;
 	}
@@ -71,35 +72,130 @@ public:
 	}
 };
 
+class HexStringConstraint : public TCLAP::Constraint<std::string>
+{
+public:
+	virtual std::string description() const
+	{
+		return "Must be a hexadecimal number between 0-FFFFFF.";
+	}
+	virtual std::string shortID() const
+	{
+		return "RRGGBB";
+	}
+	virtual bool check(const std::string &value) const
+	{
+		try
+		{
+			unsigned long result = std::stoul(value, nullptr, 16);
+			if(result > 0xFFFFFF) return false;
+		}catch(std::exception&)
+		{
+			return false;
+		}
+
+		return true;
+	}
+};
+
+struct ColorScheme
+{
+	unsigned int bg;
+	unsigned int fg;
+};
+
+static std::unordered_map<std::string, ColorScheme> schemes = {
+	{"autumn", ColorScheme{0x996600, 0xFFCC00}},
+	{"deep blue", ColorScheme{0x000080,0xFFFFFF}},
+};
+
+std::string GetColorSchemeList()
+{
+	std::string list = "Available color schemes: ";
+	bool first = true;
+	for(auto it = schemes.begin(); it != schemes.end(); it++)
+	{
+		if(first)
+		{
+			first = false;
+			list += it->first;
+		}else{
+			list += ", " + it->first;
+		}
+	}
+
+	return list;
+}
+
+class ColorSchemeConstraint : public TCLAP::Constraint<std::string>
+{
+public:
+	virtual std::string description() const
+	{
+		return GetColorSchemeList();
+	}
+	virtual std::string shortID() const
+	{
+		return "color scheme";
+	}
+	virtual bool check(const std::string &value) const
+	{
+		std::string scheme = value;
+		std::transform(scheme.begin(), scheme.end(), scheme.begin(), ::tolower);
+
+		return schemes.find(scheme) != schemes.end();
+	}
+};
+
 int main(int argc, char** argv)
 {
 	try{
 		TCLAP::CmdLine cmd("Description of program", ' ', "0.1");
 		
 		TCLAP::UnlabeledValueArg<std::string> filePath("run", "Provide a relative or absolute path.", true, "", "Path to CHIP-8 program", cmd, false);
-		TCLAP::SwitchArg listAudioSwitch("d", "list-audio-devices", "List the available audio devices.", cmd, false);
-		TCLAP::ValueArg<std::string> audioDevice("a", "audio-device", "Provide the name of the audio device to use from the output of -d.", false, "", "device name", cmd);
+		TCLAP::SwitchArg listAudioDevices("l", "list-audio-devices", "List the available audio devices.", cmd, false);
+		TCLAP::ValueArg<std::string> audioDevice("a", "audio-device", "Provide the name of the audio device to use from the output of -l.", false, "", "device name", cmd);
 		PixelConstraint pc;
-		TCLAP::ValueArg<int> pixelScale("p", "pixel-scale", "Amount to scale each pixel in the 64x32 display.", false, 16, &pc, cmd);
+		TCLAP::ValueArg<unsigned int> pixelScale("p", "pixel-scale", "Amount to scale each pixel in the 64x32 display. Default: 16", false, 16, &pc, cmd);
 		IPSConstraint ic;
 		TCLAP::ValueArg<uint32_t> ips("i", "ips", "Number of instructions to execute per second. Default: 600", false, 600, &ic, cmd);
 		VolumeConstraint vc;
 		TCLAP::ValueArg<float> volume("v", "volume", "Volume level from 0 to 1. Default: 0.1", false, 0.1f, &vc, cmd);
+		TCLAP::SwitchArg debugMode("d", "debug", "Enable debuging mode.", cmd, false);
+		HexStringConstraint hc;
+		TCLAP::ValueArg<std::string> background("b", "background", "Background color in RRGGBB hexadecimal format.", false, "", &hc, cmd);
+		TCLAP::ValueArg<std::string> foreground("f", "foreground", "Foreground color in RRGGBB hexadecimal format.", false, "", &hc, cmd);
+		ColorSchemeConstraint csc;
+		TCLAP::ValueArg<std::string> colorScheme("c", "color-scheme", GetColorSchemeList(), false, "", &csc, cmd);
 
 		cmd.parse(argc, argv);
 
-		Chip8 chip8(pixelScale.getValue(), audioDevice.getValue());
+		Chip8 chip8;
 
 		chip8.SetIPS(ips.getValue());
 		chip8.SetVolume(volume.getValue());
-		if(listAudioSwitch.getValue())
+		chip8.EnableDebug(debugMode.getValue());
+		chip8.SetPixelScale(pixelScale.getValue());
+		
+		if(audioDevice.isSet()) chip8.SetPreferredAudioDevice(audioDevice.getValue());
+
+		if(background.isSet()) chip8.SetBackgroundColor(std::stoul(background.getValue(), nullptr, 16));
+		if(foreground.isSet()) chip8.SetForegroundColor(std::stoul(foreground.getValue(), nullptr, 16));
+
+		if(colorScheme.isSet())
 		{
-			chip8.ShowAudioDevices();
+			std::string scheme = colorScheme.getValue();
+			std::transform(scheme.begin(), scheme.end(), scheme.begin(), ::tolower);
+
+			auto key = schemes.find(scheme);
+			if(key != schemes.end())
+			{
+				chip8.SetBackgroundColor(key->second.bg);
+				chip8.SetForegroundColor(key->second.fg);
+			}
 		}
-		if(audioDevice.getValue().length() > 0)
-		{
-			chip8.SetPreferredAudioDevice(audioDevice.getValue());
-		}
+
+		if(listAudioDevices.getValue()) chip8.ShowAudioDevices();
 
 		if(chip8.LoadProgram(filePath.getValue()))
 		{
