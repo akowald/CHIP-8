@@ -56,6 +56,8 @@ private:
 
 	std::mt19937 rng;
 	std::string preferredAudio;
+	// Data for the monochrome display.
+	std::bitset<W*H> display;
 
 	union
 	{
@@ -79,8 +81,6 @@ private:
 			uint8_t soundTimer;
 			// Font data for characters 0-F. Sprite size is 5 bytes.
 			uint8_t font[16*5];
-			// Data for the monochrome display.
-			std::bitset<W*H> display;
 			// Bit field for currently pressed keys.
 			uint16_t keys;
 		};

@@ -16,6 +16,9 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include <cassert>
+#include <cstring>
+#include <climits>
+#include <sys/stat.h>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
@@ -39,6 +42,11 @@ enum
 
 Chip8::Chip8()
 {
+	texture = nullptr;
+	renderer = nullptr;
+	window = nullptr;
+	audioDevice = 0;
+
 	static const uint8_t fonts[16 * 5] = {
 		0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
 		0x20, 0x60, 0x20, 0x20, 0x70, // 1
@@ -284,7 +292,7 @@ bool Chip8::LoadProgram(const std::string &fileName)
 		{
 			printf("Failed to load program.. Missing or invalid file: %s\n", fileName.c_str());
 		}else{
-			printf("Failed to load program.. Program size of %d bytes exceeds maximum size of %d bytes.\n", status.st_size, MAX_PROGRAM_SIZE);
+			printf("Failed to load program.. Program size of %ld bytes exceeds maximum size of %d bytes.\n", status.st_size, MAX_PROGRAM_SIZE);
 		}
 		
 		return false;
@@ -298,7 +306,7 @@ bool Chip8::LoadProgram(const std::string &fileName)
 	}
 
 	input.read((char *)&memory[PROGRAM_SPACE], MAX_PROGRAM_SIZE);
-	printf("Loaded program.. %s (%lld bytes)\n", fileName.c_str(), input.gcount());
+	printf("Loaded program.. %s (%ld bytes)\n", fileName.c_str(), (long int)input.gcount());
 
 	Reset();
 
