@@ -25,3 +25,6 @@ Imagine this hexadecimal keypad is laid on top of the 1 key. Thus, on the Englis
 4 | 5 | 6 | D
 7 | 8 | 9 | E
 A | 0 | B | F
+
+## Credits
+Inspired from [bisqwit's](http://bisqwit.iki.fi/jutut/kuvat/programming_examples/chip8) interpreter.
