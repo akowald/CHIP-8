@@ -150,7 +150,7 @@ public:
 int main(int argc, char** argv)
 {
 	try{
-		TCLAP::CmdLine cmd("Description of program", ' ', "0.1");
+		TCLAP::CmdLine cmd("A CHIP-8 interpreter written in C++.", ' ', "0.1");
 		
 		TCLAP::UnlabeledValueArg<std::string> filePath("run", "Provide a relative or absolute path.", true, "", "Path to CHIP-8 program", cmd, false);
 		TCLAP::SwitchArg listAudioDevices("l", "list-audio-devices", "List the available audio devices.", cmd, false);
